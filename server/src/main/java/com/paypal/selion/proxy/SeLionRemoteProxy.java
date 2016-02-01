@@ -16,6 +16,8 @@
 package com.paypal.selion.proxy;
 
 import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +26,9 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
+import javax.servlet.http.HttpServlet;
+
+import org.apache.commons.lang.StringUtils;
 import org.apache.http.HttpResponse;
 import org.apache.http.HttpStatus;
 import org.apache.http.NameValuePair;
@@ -40,20 +45,21 @@ import org.openqa.grid.internal.SessionTerminationReason;
 import org.openqa.grid.internal.TestSession;
 import org.openqa.grid.internal.TestSlot;
 import org.openqa.grid.selenium.proxy.DefaultRemoteProxy;
+import org.openqa.selenium.remote.CapabilityType;
+import org.openqa.selenium.remote.DesiredCapabilities;
 
 import com.paypal.selion.SeLionBuildInfo;
-import com.paypal.selion.pojos.SeLionGridConstants;
 import com.paypal.selion.SeLionBuildInfo.SeLionBuildProperty;
-import com.paypal.selion.node.servlets.LogServlet;
-import com.paypal.selion.node.servlets.NodeForceRestartServlet;
 import com.paypal.selion.grid.servlets.GridAutoUpgradeDelegateServlet;
 import com.paypal.selion.logging.SeLionGridLogger;
+import com.paypal.selion.node.servlets.LogServlet;
 import com.paypal.selion.node.servlets.NodeAutoUpgradeServlet;
+import com.paypal.selion.node.servlets.NodeForceRestartServlet;
+import com.paypal.selion.pojos.BrowserInformationCache;
+import com.paypal.selion.pojos.SeLionGridConstants;
 import com.paypal.selion.utils.ConfigParser;
 import com.paypal.test.utilities.logging.SimpleLogger;
 import com.paypal.test.utilities.logging.SimpleLoggerSettings;
-
-import javax.servlet.http.HttpServlet;
 
 /**
  * This is a customized {@link DefaultRemoteProxy} for SeLion. <br>
@@ -120,6 +126,13 @@ public class SeLionRemoteProxy extends DefaultRemoteProxy {
     public SeLionRemoteProxy(RegistrationRequest request, Registry registry) throws IOException {
         super(request, registry);
 
+        // Enable the cache to store the browser information only when the 
+        // "com.paypal.selion.grid.servlets.GridStatistics" is enabled - results in
+        // better memory management if the servlet is not loaded
+        if (registry.getConfiguration().getServlets().contains("com.paypal.selion.grid.servlets.GridStatistics")) {
+            updateBrowserCache(request);
+        }
+
         proxyStartMillis = System.currentTimeMillis();
         scheduledShutdown = false;
         totalSessionsCompleted = 0;
@@ -171,8 +184,8 @@ public class SeLionRemoteProxy extends DefaultRemoteProxy {
                 .setSocketTimeout(CONNECTION_TIMEOUT).build();
 
         CloseableHttpClient client = HttpClientBuilder.create().setDefaultRequestConfig(config).build();
-        String url = String.format("http://%s:%d/extra/%s", machine, getRemoteHost().getPort(),
-                servlet.getSimpleName());
+        String url = String
+                .format("http://%s:%d/extra/%s", machine, getRemoteHost().getPort(), servlet.getSimpleName());
 
         try {
             HttpGet get = new HttpGet(url);
@@ -273,7 +286,7 @@ public class SeLionRemoteProxy extends DefaultRemoteProxy {
      * @return whether the proxy has reached the max unique sessions
      */
     private boolean isMaxUniqueSessionsReached() {
-        if (!isEnabledMaxUniqueSessions()){
+        if (!isEnabledMaxUniqueSessions()) {
             return false;
         }
         return totalSessionsStarted >= getMaxSessionsAllowed();
@@ -316,8 +329,7 @@ public class SeLionRemoteProxy extends DefaultRemoteProxy {
     }
 
     private TestSession logSessionInfo() {
-        proxyLogger.fine("Was max sessions reached? " + (isMaxUniqueSessionsReached()) + " on node "
-                + getId());
+        proxyLogger.fine("Was max sessions reached? " + (isMaxUniqueSessionsReached()) + " on node " + getId());
         proxyLogger.fine("Was this a scheduled shutdown? " + (scheduledShutdown) + " on node " + getId());
         return null;
     }
@@ -335,6 +347,24 @@ public class SeLionRemoteProxy extends DefaultRemoteProxy {
                 getNodeRecycleThread().join(2000); // Wait no longer than 2x the recycle thread's loop
             } catch (InterruptedException e) { // NOSONAR
                 // ignore
+            }
+        }
+    }
+
+    private void updateBrowserCache(RegistrationRequest request) throws MalformedURLException {
+
+        // Update the browser information cache only when GridStatistics servlet is enabled
+        // in the grid configuration.
+        String urlString = request.getConfiguration().get("url").toString();
+        URL url = new URL(urlString);
+        for (DesiredCapabilities desiredCapabilities : request.getCapabilities()) {
+            Map<String, ?> capabilitiesMap = desiredCapabilities.asMap();
+            String browserName = capabilitiesMap.get(CapabilityType.BROWSER_NAME).toString();
+            String maxInstancesAsString = capabilitiesMap.get("maxInstances").toString();
+            if (StringUtils.isNotBlank(browserName) && StringUtils.isNotBlank(maxInstancesAsString)) {
+                int maxInstances = Integer.valueOf(maxInstancesAsString);
+                BrowserInformationCache cache = BrowserInformationCache.getInstance();
+                cache.updateBrowerInfo(url, browserName, maxInstances);
             }
         }
     }
